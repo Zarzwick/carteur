@@ -6,7 +6,7 @@
 //
 
 // This triggers the construction and use of an inet graph to perform common
-// or less common analysis, and, eventually, optimisations. UNSUPPORTED
+// or less common analysis, and, eventually, optimisations. UNSUPPORTED now...
 //#define CARTEUR_GRAPH_ANALYSIS
 
 #include <m-lib/m-string.h>
@@ -34,6 +34,50 @@
 // is meant to generate code (this stage is done by languages backend).
 //
 
+
+///
+/// Here are a few parameters. A state machine (or graph) has a name. It can
+/// - declare the states (enum name_states) or not (default: yes)
+/// - declare the events (enum name_events) or not (default: no)
+///
+typedef struct parameters_t {
+    bool declare_states ;
+    bool declare_events ;
+    char* machine_name ;
+    char* states_enum_name ;
+    char* events_enum_name ;
+} parameters_t ;
+
+#define CARTEUR_DEFAULT_MACHINE_NAME "machine"
+#define CARTEUR_DEFAULT_STATES_NAME "machine_states"
+#define CARTEUR_DEFAULT_EVENTS_NAME "machine_events"
+
+#define CARTEUR_DEFAULT_PARAMETERS \
+    { .declare_states = true \
+    , .declare_events = false \
+    , .machine_name = CARTEUR_DEFAULT_MACHINE_NAME \
+    , .states_enum_name = CARTEUR_DEFAULT_STATES_NAME \
+    , .events_enum_name = CARTEUR_DEFAULT_EVENTS_NAME \
+    }
+
+void parameters_init(parameters_t* params) {
+    params->declare_states = true ;
+    params->declare_events = false ;
+    // Copy names from string litterals, to prevent double-free.
+    string_t machine_name_copy ;
+    string_t states_enum_name_copy ;
+    string_t events_enum_name_copy ;
+    string_init_set(machine_name_copy, CARTEUR_DEFAULT_MACHINE_NAME) ;
+    string_init_set(states_enum_name_copy, CARTEUR_DEFAULT_STATES_NAME) ;
+    string_init_set(events_enum_name_copy, CARTEUR_DEFAULT_EVENTS_NAME) ;
+    params->machine_name = string_clear_get_str(machine_name_copy) ;
+    params->states_enum_name = string_clear_get_str(states_enum_name_copy) ;
+    params->events_enum_name = string_clear_get_str(events_enum_name_copy) ;
+}
+
+#define CARTEUR_INI_TRUE "true"
+#define CARTEUR_INI_FALSE "false"
+
 ///
 /// One transition from some state to another state, triggered by an event
 /// and calling a callback.
@@ -48,12 +92,34 @@ typedef struct transition_t {
 // NOTE : I tend to avoid using this [1] "trick" myself when I can avoid it.
 // However it makes life much easier when used along with M* lib.
 
-void transition_init(transition_t t) { t->from = 0ul ; t->to = 0ul ; t->event = 0ul; t->callback = 0ul ; }
+void transition_init(transition_t t)
+{
+    t->from = 0ul ;
+    t->to = 0ul ;
+    t->event = 0ul ;
+    t->callback = 0ul ;
+}
 void transition_set(transition_t transition, const transition_t model) {}
-void transition_init_set(transition_t transition, const transition_t model) { *transition = *model ; }
+void transition_init_set(transition_t transition, const transition_t model)
+{
+    *transition = *model ;
+}
 void transition_clear(transition_t transition) {}
-int transition_cmp(transition_t a, transition_t b) { return a->event - b->event ; }
-void transition_swap(transition_t a, transition_t b) { transition_t temp ; *temp = *a ; *a = *b ; *b = *temp ; }
+int transition_cmp(transition_t a, transition_t b)
+{
+    return a->event - b->event ;
+}
+int transition_cmp_qsort(transition_t const* a, transition_t const* b)
+{
+    return (*a)->event - (*b)->event ;
+}
+void transition_swap(transition_t a, transition_t b)
+{
+    transition_t temp ;
+    *temp = *a ;
+    *a = *b ;
+    *b = *temp ;
+}
 
 #define M_OPL_transition_t() \
     ( INIT(transition_init) \
@@ -87,6 +153,7 @@ DICT_DEF2(dict_string, string_t, STRING_OPLIST, size_t, M_DEFAULT_OPLIST)
 /// and callback names, and a dynamic array of transitions.
 ///
 typedef struct parsing_stage_data_t {
+    parameters_t* parameters ;
     //igraph_t graph ;
     dict_string_t states ;
     dict_string_t events ;
@@ -242,10 +309,10 @@ static int parser_handler
 
     // Add state.
     if (strcmp(name, "state") == 0) {
-        string_t name ;
-        string_init_set_str(name, value) ;
+        string_t value_copy ;
+        string_init_set_str(value_copy, value) ;
         const size_t n = dict_string_size(machine->states) ;
-        dict_string_set_at(machine->states, name, n) ;
+        dict_string_set_at(machine->states, value_copy, n) ;
 #if defined(CARTEUR_GRAPH_ANALYSIS)
 #endif
     }
@@ -257,6 +324,46 @@ static int parser_handler
 #if defined(CARTEUR_GRAPH_ANALYSIS)
         //igraph_add_edge(graph, from, to).
 #endif
+    }
+
+    // Parameters.
+    else if (strcmp(name, "declare_states") == 0) {
+        if (strcmp(value, CARTEUR_INI_TRUE) == 0)
+            machine->parameters->declare_states = true ;
+        else if (strcmp(value, CARTEUR_INI_FALSE) == 0)
+            machine->parameters->declare_states = false ;
+        //else
+        //    error
+    }
+
+    else if (strcmp(name, "declare_events") == 0) {
+        if (strcmp(value, CARTEUR_INI_TRUE) == 0)
+            machine->parameters->declare_events = true ;
+        else if (strcmp(value, CARTEUR_INI_FALSE) == 0)
+            machine->parameters->declare_events = false ;
+        // else
+        //    error
+    }
+
+    else if (strcmp(name, "machine_name") == 0) {
+        string_t copy ;
+        string_init_set(copy, value) ;
+        free(machine->parameters->machine_name) ;
+        machine->parameters->machine_name = string_clear_get_str(copy) ;
+    }
+
+    else if (strcmp(name, "states_enum_name") == 0) {
+        string_t copy ;
+        string_init_set(copy, value) ;
+        free(machine->parameters->states_enum_name) ;
+        machine->parameters->states_enum_name = string_clear_get_str(copy) ;
+    }
+
+    else if (strcmp(name, "events_enum_name") == 0) {
+        string_t copy ;
+        string_init_set(copy, value) ;
+        free(machine->parameters->events_enum_name) ;
+        machine->parameters->events_enum_name = string_clear_get_str(copy) ;
     }
 
     // Unknown name, error in the file.
@@ -277,6 +384,7 @@ static int parser_handler
 /// representation from stage 1 to the one in stage 3.
 ///
 typedef struct generation_stage_data_t {
+    parameters_t* parameters ;
     array_char_ptr_t states ;
     array_char_ptr_t events ;
     array_char_ptr_t callbacks ;
@@ -319,8 +427,9 @@ void transform_graph
     fill_array_from_dictionnary(generation->events, parsing->events) ;
     fill_array_from_dictionnary(generation->callbacks, parsing->callbacks) ;
     array_transition_init_move(generation->transitions, parsing->transitions) ;
+    array_transition_special_sort(generation->transitions, transition_cmp_qsort) ;
     // This seems to trigger a fault when used on a 2-sized array. See l.814 of m-array.h FIXME...
-    array_transition_special_stable_sort(generation->transitions) ;
+    //array_transition_special_stable_sort(generation->transitions) ;
 #if defined(CARTEUR_GRAPH_ANALYSIS)
     // TODO
 #endif
@@ -328,25 +437,57 @@ void transform_graph
 
 // ................................................................... STAGE 3
 
+///
+/// ...
+///
 void generate_C_header(FILE* file, generation_stage_data_t* stage_data) {
+    const char* machine_name = stage_data->parameters->machine_name ;
+    const char* states_enum_name = stage_data->parameters->states_enum_name ;
     fprintf(file, "// File generated by carteur.\n\n") ;
     fprintf(file, "#pragma once\n\n") ;
+
     // Emit an enum of all states.
-    //for (
+    if (stage_data->parameters->declare_states) {
+        fprintf(file, "typedef enum {\n") ;
+        const size_t n_states = array_char_ptr_size(stage_data->states) ;
+        for (size_t s = 0; s < n_states; ++ s) {
+            fprintf(file, "\t%s,\n", *array_char_ptr_get(stage_data->states, s));
+        }
+        fprintf(file, "} %s ;\n\n", stage_data->parameters->states_enum_name) ;
+    }
+
+    // Emit an enum of all events.
+    if (stage_data->parameters->declare_events) {
+        fprintf(file, "typedef enum {\n") ;
+        const size_t n_events = array_char_ptr_size(stage_data->events) ;
+        for (size_t s = 0; s < n_events; ++ s) {
+            fprintf(file, "\t%s,\n", *array_char_ptr_get(stage_data->events, s));
+        }
+        fprintf(file, "} %s ;\n\n", stage_data->parameters->events_enum_name) ;
+    }
+
     // Emit one signature per event.
     const size_t n_events = array_char_ptr_size(stage_data->events) ;
     for (size_t ev = 0; ev < n_events; ++ ev) {
         const char* ev_name = *array_char_ptr_get(stage_data->events, ev) ;
-        fprintf(file, "void handle_%s(void) ;\n", ev_name) ;
+        fprintf(file, "void %s_handle_%s(%s* state, void* user) ;\n"
+                , machine_name, ev_name, states_enum_name) ;
     }
     fprintf(file, "\n") ;
 }
 
+///
+/// ...
+///
 void generate_C_source(FILE* file, generation_stage_data_t* stage_data) {
-    fprintf(file, "#include \"truc.h\"\n\n") ;
+    const char* machine_name = stage_data->parameters->machine_name ;
+    const char* states_enum_name = stage_data->parameters->states_enum_name ;
+    fprintf(file, "#include \"generated_%s.h\"\n\n", machine_name) ;
+
     array_transition_it_t it ;
     array_transition_it(it, stage_data->transitions) ;
     bool transitions_available = ! array_transition_end_p(it) ;
+
     // Consume all transitions. The outer loop handles event changes, and thus
     // generates the head and bottom of each handler function. The inner loop
     // consumes all transitions related to the same event (hence the order
@@ -358,8 +499,12 @@ void generate_C_source(FILE* file, generation_stage_data_t* stage_data) {
         const char* callback = NULL ;
         const char* from     = NULL ;
         const char* to       = NULL ;
-        // Emit signature.
-        fprintf(file, "void handle_%s(void) {\n", event) ;
+
+        // Emit top of function.
+        fprintf(file, "void %s_handle_%s(%s* state, void* user) {\n",
+                machine_name, event, states_enum_name) ;
+        fprintf(file, "\tswitch (*state) {\n") ;
+
         // Emit cases.
         bool same_event = true ;
         while (same_event) {
@@ -368,9 +513,10 @@ void generate_C_source(FILE* file, generation_stage_data_t* stage_data) {
             from = *array_char_ptr_get(stage_data->states, (*ref)->from) ;
             to   = *array_char_ptr_get(stage_data->states, (*ref)->to) ;
             fprintf(file, "\tcase %s:\n", from) ;
-            fprintf(file, "\t\t// call callback %s\n", callback) ;
-            fprintf(file, "\t\t// new state = %s\n", to) ;
+            fprintf(file, "\t\t%s(user)\n", callback) ;
+            fprintf(file, "\t\t*state = %s\n", to) ;
             fprintf(file, "\t\tbreak\n") ;
+
             // Decide if the event will be the same or not.
             array_transition_next(it) ;
             if (array_transition_end_p(it)) {
@@ -380,13 +526,20 @@ void generate_C_source(FILE* file, generation_stage_data_t* stage_data) {
             ref = array_transition_cref(it) ;
             same_event = (current_event == (*ref)->event) ;
         }
-        fprintf(file, "}\n\n") ;
+
+        // Emit bottom of function.
+        // TODO Give the (default) option to raise an error.
+        fprintf(file, "\tdefault:\n\t\t// IMPOSSIBLE\n") ;
+        fprintf(file, "\t}\n}\n\n") ;
     }
 }
 
+///
+/// ...
+///
 void generate_C(generation_stage_data_t* stage_data) {
-    FILE* h_file = fopen("truc.h", "w") ;
-    FILE* c_file = fopen("truc.c", "w") ;
+    FILE* h_file = fopen("generated_" CARTEUR_DEFAULT_MACHINE_NAME ".h", "w") ;
+    FILE* c_file = fopen("generated_" CARTEUR_DEFAULT_MACHINE_NAME ".c", "w") ;
     generate_C_header(h_file, stage_data) ;
     generate_C_source(c_file, stage_data) ;
     fclose(h_file) ;
@@ -398,7 +551,10 @@ void generate_C(generation_stage_data_t* stage_data) {
 int main()
 {
     //int err ;
+    parameters_t params ;
+    parameters_init(&params) ;
     parsing_stage_data_t parsing_stage_data ;
+    parsing_stage_data.parameters = &params ;
 
 #if defined(CARTEUR_GRAPH_ANALYSIS)
     err = igraph_empty(&machine.graph, 0, true) ;
@@ -450,6 +606,7 @@ int main()
 
     // Stage 2 - Optimisation.
     generation_stage_data_t generation_data ;
+    generation_data.parameters = &params ;
     transform_graph(&parsing_stage_data, &generation_data) ;
 
     /*
@@ -473,6 +630,10 @@ int main()
     array_char_ptr_clear(generation_data.states) ;
     array_char_ptr_clear(generation_data.events) ;
     array_char_ptr_clear(generation_data.callbacks) ;
+
+    free(params.machine_name) ;
+    free(params.states_enum_name) ;
+    free(params.events_enum_name) ;
 
 #if defined(CARTEUR_GRAPH_ANALYSIS)
     igraph_destroy(&parsing_stage_data.graph) ;
