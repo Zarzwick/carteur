@@ -52,8 +52,10 @@ void transition_init(transition_t t) { t->from = 0ul ; t->to = 0ul ; t->event = 
 void transition_set(transition_t transition, const transition_t model) {}
 void transition_init_set(transition_t transition, const transition_t model) { *transition = *model ; }
 void transition_clear(transition_t transition) {}
+int transition_cmp(transition_t a, transition_t b) { return a->event - b->event ; }
+void transition_swap(transition_t a, transition_t b) { transition_t temp ; *temp = *a ; *a = *b ; *b = *temp ; }
 
-#define M_OPL_transition_t() M_CLASSIC_OPLIST(transition)
+#define M_OPL_transition_t() (INIT(transition_init), SET(transition_set), INIT_SET(transition_init_set), CLEAR(transition_clear), CMP(transition_cmp), SWAP(transition_swap))
 
 ARRAY_DEF(arraylist_transition, transition_t)
 ARRAY_DEF(arraylist_string, string_t, STRING_OPLIST)
@@ -233,7 +235,6 @@ static int parser_handler
     else if (strcmp(name, "transition") == 0) {
         parse_identifers(value, strlen(value), parser_transition_handler, &todo) ;
         arraylist_transition_push_back(machine->transitions, transition) ;
-        //printf("New transition %zu %zu %zu %zu\n", transition.from, transition.to, transition.event, transition.callback) ;
 #if defined(CARTEUR_GRAPH_ANALYSIS)
         //igraph_add_edge(graph, from, to).
 #endif
@@ -263,6 +264,10 @@ typedef struct generation_stage_data_t {
     arraylist_transition_t transitions ;
 } generation_stage_data_t ;
 
+///
+/// Turn a mapping (string -> integer) into an array of strings, such that
+/// the mapping is reversed.
+///
 void fill_array_from_dictionnary
     ( arraylist_string_t dest
     , const dict_string_t src
@@ -280,6 +285,10 @@ void fill_array_from_dictionnary
     }
 }
 
+///
+/// General function that embodies the whole second stage. It turns maps into
+/// arrays for stage 3, and possibly perform graph analysis.
+///
 void transform_graph
     ( parsing_stage_data_t* parsing
     , generation_stage_data_t* generation
@@ -289,6 +298,8 @@ void transform_graph
     fill_array_from_dictionnary(generation->events, parsing->events) ;
     fill_array_from_dictionnary(generation->callbacks, parsing->callbacks) ;
     arraylist_transition_init_move(generation->transitions, parsing->transitions) ;
+    // This seems to trigger a fault when used on a 2-sized array. See l.814 of m-array.h FIXME...
+    arraylist_transition_special_stable_sort(generation->transitions) ;
 #if defined(CARTEUR_GRAPH_ANALYSIS)
     // TODO
 #endif
@@ -310,22 +321,43 @@ void generate_C_header(FILE* file, generation_stage_data_t* stage_data) {
 
 void generate_C_source(FILE* file, generation_stage_data_t* stage_data) {
     fprintf(file, "#include \"truc.h\"\n\n") ;
-    // Emit one function per event.
-    const size_t n_events = arraylist_string_size(stage_data->events) ;
-    const size_t n_states = arraylist_string_size(stage_data->states) ;
-    for (size_t ev = 0; ev < n_events; ++ ev) {
-        string_t* ev_name = arraylist_string_get(stage_data->events, ev) ;
-        fprintf(file, "void handle_%s(void)\n", string_get_cstr(*ev_name)) ;
-        fprintf(file, "{\n\tswitch (...) {\n") ;
-        for (size_t from = 0; from < n_states; ++ from) {
-            string_t* from_name = arraylist_string_get(stage_data->states, from) ;
-            //string_t* callback_name = arraylist_string_get(stage_data->callbacks, from) ;
-            fprintf(file, "\tcase %s:\n", string_get_cstr(*from_name)) ;
-            //fprintf(file, "\t\t") ;
-            fprintf(file, "\t\tbreak ;\n") ;
+    arraylist_transition_it_t it ;
+    arraylist_transition_it(it, stage_data->transitions) ;
+    bool transitions_available = ! arraylist_transition_end_p(it) ;
+    // Consume all transitions. The outer loop handles event changes, and thus
+    // generates the head and bottom of each handler function. The inner loop
+    // consumes all transitions related to the same event (hence the order
+    // requirement) to produce the different cases.
+    while (transitions_available) {
+        const transition_t* ref = arraylist_transition_cref(it) ;
+        const size_t current_event = (*ref)->event ;
+        string_t* event = arraylist_string_get(stage_data->events, (*ref)->event) ;
+        string_t* callback = NULL ;
+        string_t* from     = NULL ;
+        string_t* to       = NULL ;
+        // Emit signature.
+        fprintf(file, "void handle_%s(void) {\n", string_get_cstr(*event)) ;
+        // Emit cases.
+        bool same_event = true ;
+        while (same_event) {
+            // Get names for the current transition t.
+            callback = arraylist_string_get(stage_data->callbacks, (*ref)->callback) ;
+            from = arraylist_string_get(stage_data->states, (*ref)->from) ;
+            to   = arraylist_string_get(stage_data->states, (*ref)->to) ;
+            fprintf(file, "\tcase %s:\n", string_get_cstr(*from)) ;
+            fprintf(file, "\t\t// call callback %s\n", string_get_cstr(*callback)) ;
+            fprintf(file, "\t\t// new state = %s\n", string_get_cstr(*to)) ;
+            fprintf(file, "\t\tbreak\n") ;
+            // Decide if the event will be the same or not.
+            arraylist_transition_next(it) ;
+            if (arraylist_transition_end_p(it)) {
+                transitions_available = false ;
+                break ;
+            }
+            ref = arraylist_transition_cref(it) ;
+            same_event = (current_event == (*ref)->event) ;
         }
-        fprintf(file, "\tdefault:\n\t\t// Impossible.\n") ;
-        fprintf(file, "\t}\n}\n\n") ;
+        fprintf(file, "}\n\n") ;
     }
 }
 
@@ -361,7 +393,7 @@ int main()
     // Stage 1 - Parsing.
     ini_parse("test.ini", parser_handler, &parsing_stage_data) ;
 
-    ///*
+    /*
     dict_string_it_t it ;
     printf("States :\n") ;
     dict_string_it(it, parsing_stage_data.states) ;
@@ -391,11 +423,19 @@ int main()
         transition_t* ref = arraylist_transition_get(parsing_stage_data.transitions, i) ;
         printf("%zu %zu %zu %zu\n", (*ref)->from, (*ref)->to, (*ref)->event, (*ref)->callback) ;
     }
-    //*/
+    */
 
     // Stage 2 - Optimisation.
     generation_stage_data_t generation_data ;
     transform_graph(&parsing_stage_data, &generation_data) ;
+
+    /*
+    printf("\nTransitions (sorted) :\n") ;
+    for (size_t i = 0; i < n_transitions; ++ i) {
+        transition_t* ref = arraylist_transition_get(generation_data.transitions, i) ;
+        printf("%zu %zu %zu %zu\n", (*ref)->from, (*ref)->to, (*ref)->event, (*ref)->callback) ;
+    }
+    */
 
     // Clear stage 1 dictionnaries as they aren't required anymore.
     dict_string_clear(parsing_stage_data.callbacks) ;
@@ -414,11 +454,6 @@ int main()
 #if defined(CARTEUR_GRAPH_ANALYSIS)
     igraph_destroy(&parsing_stage_data.graph) ;
 #endif
-
-    //// Test 1...
-    //for (size_t i = 0; i < arraylist_char_ptr_size(machine.states); ++ i) {
-    //    fprintf(stderr, "state: %s\n", *arraylist_char_ptr_get(machine.states, i)) ;
-    //}
 
     return 0 ;
 }
